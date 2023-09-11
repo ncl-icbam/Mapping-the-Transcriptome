@@ -1,0 +1,816 @@
+---
+title: "CELL Perspectives publication figures"
+output: html_document
+author: "Eleftherios (Lefteris) Zormpas"
+date: "`r format(Sys.time(), '%Y-%m-%d')`"
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      error = TRUE,
+                      message = TRUE,
+                      eval = TRUE)
+```
+
+# CELL Perspectives publication figures
+
+The below Rmarkdown will guide you through the steps that generated the graphs used in the publications figures.
+
+**NOTE:** all the scripts that are being sourced below, are present inside the *figures/R* folder in the [publication's](https://github.com/ncl-icbam/cell-perspectives-paper) GitHub repo.
+
+## 1. Load/ install all the required packages and custom scripts
+
+```{r load-import pkg, message=FALSE, error=FALSE}
+source(file = "./R/load_packages.R")
+```
+
+## 2. Import the Data and the MetaData to be used
+
+```{r import-data, message=FALSE, error=FALSE}
+source(file = "./R/load_data.R")
+```
+
+## 3. Pre-process the data
+
+```{r pre-process, message=FALSE, error=FALSE}
+source(file = "./R/preprocess_data.R")
+```
+
+## 4. Generate figure graphs
+
+### 4.1 Figure: Spatial Autocorrelation (SA)
+
+#### 4.1.1 Prepare for SA calculations
+
+Here we prepare the data to calculate SA. Note that the below code will produce the selected graphs. If you want to have a look at the exploration before the selection then refer to the *figure_SA.R* script inside the *figures/R* folder in the [publication's](https://github.com/ncl-icbam/cell-perspectives-paper) GitHub repo.
+
+**NOTE:** during the normalisation using Seurat, we selected the 2000 most variable genes (as per Seurat's default option).
+
+```{r figure_SA}
+### Get spot names ----
+nb_names <- polygons$Barcode
+
+### Get counts for the 2000 most variable genes ----
+### The counts are normalised 
+### It is important at the last step to order the rows as the vector of names above
+
+SA_counts_Nor <- obs_Nor %>% 
+  filter(rownames(.) %in% var_genes) %>%
+  t() %>%
+  as.data.frame() %>%
+  .[nb_names,]
+
+### Find neighbours ----
+neighbours_knn <- knn2nb(knearneigh(polygons$geom_cntd, k = 6), 
+                         row.names = nb_names)
+
+### Calculate neighbour weights ----
+neighbours_w_exp <- nb2listwdist(neighbours_knn, polygons$geom_cntd,
+                                 type = "idw", style = "raw", alpha = 2,
+                                 zero.policy = TRUE)
+
+### Set plot output prefix ----
+prfx <- "countNorm"
+
+### Set active dataset ----
+data <- SA_counts_Nor
+```
+
+#### 4.1.2 Calculate GLOBAL Moran's I for all genes
+
+After exploring the genes for their global Moran's I value we identified the below two genes:
+
+**ENSG00000197971**: as the gene with the highest positive Moran's I (meaning high positive SA)
+
+#### 4.1.3 Calculate LOCAL Moran's I
+
+```{r moran-local}
+## For the selected gene
+SA_genes <- "ENSG00000197971"
+### Prepare the data ----
+gCounts <- data[,SA_genes]
+### Calculate Moran's I ----
+names(gCounts) <- rownames(data)
+moran.multi.local <- localmoran(gCounts,
+                                listw = neighbours_w_exp, 
+                                spChk = TRUE)
+
+rm(gCounts)
+```
+
+#### 4.1.4 GLOBAL Moran's I plots and tables
+
+**Moran-plot**
+
+```{r moran-plot, echo=FALSE, warning=FALSE, fig.width=10, fig.height=9}
+## Get gene expression
+gene.exp <- data[,SA_genes] %>%
+  setNames(rownames(data))
+
+## Create Moran Plot (mp)
+mp <- moran.plot(x = gene.exp, 
+                 listw = neighbours_w_exp,
+                 labels = FALSE,
+                 zero.policy = TRUE,
+                 spChk = TRUE,
+                 plot = FALSE)
+
+## Plot mp
+ggplot(mp, aes(x = x, y = wx)) + geom_point(shape = 1) + 
+  geom_smooth(formula = y ~ x, method = "lm") + 
+  geom_hline(yintercept = mean(mp$wx), lty = 2) + 
+  geom_vline(xintercept = mean(mp$x), lty = 2) + theme_minimal() + 
+  geom_point(data = mp[mp$is_inf,], aes(x = x, y = wx), shape = 9) +
+  labs(x = "Gene expression",
+       y = "Spatially lagged gene expression") + 
+  theme_bw() + 
+  theme(panel.border = element_rect(colour = "black", linewidth = rel(4))) + 
+  my_theme
+  
+  rm(gene.exp, mp)
+```
+
+**Moran Stats table**
+
+```{r moran-table, echo=FALSE, warning=FALSE}
+### Tables: Moran stats ----
+## Calculate Moran's I tests with MC perm. and Z-score
+## Z-score
+moran.stat.Z <- moran.test.ste(x = data[,SA_genes], 
+                           listw = neighbours_w_exp) %>% 
+  unlist() %>% 
+  t() %>%
+  as.data.frame() %>% 
+  select(starts_with("estimate"), p.value) %>% 
+  dplyr::rename("Moran's I" = "estimate.Moran I statistic",
+         "P-value" = "p.value", 
+         "Expected" = "estimate.Expectation", 
+         "Variance" = "estimate.Variance") %>%
+  mutate(`Test type` = "Z-score",
+         `Moran's I` = round(as.numeric(`Moran's I`), 4),
+         Expected = round(as.numeric(Expected), 6),
+         Variance = round(as.numeric(Variance), 6),) %>% 
+  relocate(`Test type`, `Moran's I`, `P-value`, .before = 1)
+
+## Monte Carlo permutations
+moran.stat.MC <- moran.mc(x = data[,SA_genes], 
+                          listw = neighbours_w_exp, 
+                          nsim = 999) %>% 
+  unlist() %>% 
+  t() %>%
+  as.data.frame() %>% 
+  select(statistic.statistic, p.value) %>% 
+  dplyr::rename("Moran's I" = "statistic.statistic",
+                "P-value" = "p.value") %>%
+  mutate(`Test type` = "MC perm",
+         "Expected" = "N/A", 
+         "Variance" = "N/A",
+         `Moran's I` = round(as.numeric(`Moran's I`), 4)) %>% 
+  relocate(`Test type`, `Moran's I`, `P-value`, .before = 1)
+
+tb <- rbind(moran.stat.Z, moran.stat.MC)
+
+## Create table
+(tb <-  tb %>%
+  flextable::flextable() %>%
+  flextable::theme_vanilla() %>%
+  flextable::fontsize(size = 12) %>%
+  flextable::fontsize(size = 14, part = "header") %>%
+  flextable::align_text_col(align = "center") %>%
+  flextable::set_caption(caption = "SA statistics (Moran's I)")) %>% 
+  print()
+
+rm(tb, moran.stat.Z, moran.stat.MC)
+```
+
+**Normalised gene expression maps**
+
+**NOTE:** the counts are Seurat-normalised and represented as log2-transformed on the map. The transformation took place as *log2(x + 1)*.
+
+```{r moran-mapExpr, echo=FALSE, warning=FALSE, fig.width=11, fig.height=11}
+### Plot: Map Expression ---- 
+## Plot from Seurat-normalised counts and visualise them as log2-transformed
+## Create a test counts df to map the gene expression
+test.counts <- data %>%
+  dplyr::select(.data[[SA_genes]]) %>% 
+  rownames_to_column(var = "Barcode") %>%
+  left_join(polygons["Barcode"])
+
+## Map gene expression
+ggplot(data = test.counts) + 
+  geom_sf(aes(geometry = geom_pol,
+              fill = log2(get(SA_genes) + 1))) + 
+  scale_fill_distiller(palette = "YlGnBu") + 
+  labs(x = "",
+       y = "",
+       fill = "Normalised\ngene expression") + 
+  my_theme_s
+
+rm(test.counts)
+```
+
+#### 4.1.5 LOCAL Moran's I plots
+
+The local Moran plots are generated only for the ENSG00000197971 gene with positive SA.
+
+**Prepare the data**
+
+```{r moran-local-plot-data, warning=FALSE, message=FALSE}
+### Prepare the data ----
+quadr <- attr(moran.multi.local, "quadr")
+  
+moran.local.map <- moran.multi.local %>% 
+  as.data.frame() %>% 
+  rownames_to_column(var = "Barcode") %>% 
+  dplyr::rename("p.value" = `Pr(z != E(Ii))`) %>% 
+  left_join(polygons[,"Barcode"]) %>%
+  mutate(Quadrant = quadr$pysal,
+         colours = Quadrant,
+         colours = as.factor(case_when(p.value > 0.05 ~ "#ffffff",
+                                       Quadrant == "Low-Low" ~ "#0066ff",
+                                       Quadrant == "High-Low" ~ "#ffb3b3",
+                                       Quadrant == "Low-High" ~ "#99c2ff",
+                                       Quadrant == "High-High" ~ "#ff0000")),
+         label = as.factor(case_when(p.value > 0.05 ~ "Not signif.",
+                                     Quadrant == "Low-Low" ~ "Low-Low",
+                                     Quadrant == "High-Low" ~ "High-Low",
+                                     Quadrant == "Low-High" ~ "Low-High",
+                                     Quadrant == "High-High" ~ "High-High")),
+         signif = as.factor(case_when(p.value < 0.05 ~ "Signif.",
+                            p.value >= 0.05 ~ "Not Signif.")),
+         b_geom = if_else(signif == "Signif.", 
+                          geom_pol, 
+                          NA)) 
+```
+
+**Local Moran Map**
+
+```{r moran-local-map, echo=FALSE, fig.height = 11, fig.width = 11}
+  
+### Plot: Map Local Moran ----
+ggplot(data = moran.local.map) +
+  geom_sf(aes(geometry = geom_pol, fill = Ii), 
+          colour = NA) + 
+  scale_fill_viridis_c(option = "inferno") + 
+  geom_sf(aes(geometry = b_geom),
+          fill = NA,
+          colour = "#E0E0E0",
+          linewidth = 0.25) +
+  labs(x = "",
+       y = "",
+       fill = "Local Moran\nIi") +
+  my_theme_s
+```
+
+**Local Moran clusters**
+
+```{r LISA-clusts, echo = FALSE, fig.height = 11, fig.width = 11}
+### Plot: Map LISA clusters ----
+ggplot(data = moran.local.map) +
+  geom_sf(aes(geometry = geom_pol, fill = colours), 
+          colour = "grey30") + 
+  scale_fill_identity(guide = "legend",
+                      labels = moran.local.map$label,
+                      breaks = moran.local.map$colours) +
+  labs(x = "",
+       y = "",
+       fill = "Local Moran\nIi Clusters") +
+  my_theme_s
+
+rm(quadr, moran.local.map)
+```
+
+#### 4.1.6 Plot the negative control
+
+Here we randomised the gene expression of gene ENSG00000197971 over space to generate a negative control and showcase the importance of space in spatial data.
+
+**Prepare the data**
+
+```{r NCtrl-data, message=FALSE, warning=FALSE}
+g = "ENSG00000197971"
+
+order <- sample(1:nrow(data), size = nrow(data), replace = FALSE)
+
+N_control <- data %>%
+  dplyr::select(all_of(g)) %>%
+  rownames_to_column(var = "Barcode") %>% 
+  mutate(Barcode = Barcode[order]) %>%
+  left_join(polygons[, c("Barcode", "geom_cntd")])
+
+rownames(N_control) <- N_control$Barcode
+
+neighbours_knn_N_control <- knn2nb(knearneigh(N_control$geom_cntd, k = 6), 
+                                   row.names = rownames(N_control))
+
+neighbours_N_Control <- nb2listwdist(neighbours_knn_N_control, N_control$geom_cntd,
+                                     type = "idw", style = "raw", alpha = 2,
+                                     zero.policy = TRUE)
+```
+
+**Normalised gene expression map**
+
+**NOTE:** the counts are Seurat-normalised and represented as log2-transformed on the map. The transformation took place as *log2(x + 1)*.
+
+```{r NCtrl-mapExpr, echo=FALSE, fig.height = 11, fig.width = 11}
+### Plot: Map Expression ----
+ggplot(data = N_control) + 
+  geom_sf(aes(geometry = geom_pol,
+              fill = log2(get("ENSG00000197971") + 1))) + 
+  scale_fill_distiller(palette = "YlGnBu") + 
+  labs(x = "",
+       y = "",
+       fill = "Normalised\ngene expression") + 
+  my_theme_s
+```
+
+**Moran Stats table**
+
+```{r NCtrl-moran-table, echo=FALSE, warning=FALSE}
+### Tables: Moran stats ----
+## Calculate Moran's I tests with MC perm. and Z-score
+## Z-score
+moran.stat.Z <- moran.test.ste(x = N_control[,g], 
+                               listw = neighbours_N_Control) %>% 
+  unlist() %>% 
+  t() %>%
+  as.data.frame() %>% 
+  select(starts_with("estimate"), p.value) %>% 
+  dplyr::rename("Moran's I" = "estimate.Moran I statistic",
+                "P-value" = "p.value", 
+                "Expected" = "estimate.Expectation", 
+                "Variance" = "estimate.Variance") %>%
+  mutate(`Test type` = "Z-score",
+         `Moran's I` = round(as.numeric(`Moran's I`), 4),
+         Expected = round(as.numeric(Expected), 6),
+         Variance = round(as.numeric(Variance), 6),) %>% 
+  relocate(`Test type`, `Moran's I`, `P-value`, .before = 1)
+
+## Monte Carlo permutations
+moran.stat.MC <- moran.mc(x = N_control[,g], 
+                          listw = neighbours_N_Control, 
+                          nsim = 999) %>% 
+  unlist() %>% 
+  t() %>%
+  as.data.frame() %>% 
+  select(statistic.statistic, p.value) %>% 
+  dplyr::rename("Moran's I" = "statistic.statistic",
+                "P-value" = "p.value") %>%
+  mutate(`Test type` = "MC perm",
+         "Expected" = "N/A", 
+         "Variance" = "N/A",
+         `Moran's I` = round(as.numeric(`Moran's I`), 4)) %>% 
+  relocate(`Test type`, `Moran's I`, `P-value`, .before = 1)
+
+tb <- rbind(moran.stat.Z, moran.stat.MC)
+
+## Create table
+(tb <-  tb %>%
+  flextable::flextable() %>%
+  flextable::theme_vanilla() %>%
+  flextable::fontsize(size = 12) %>%
+  flextable::fontsize(size = 14, part = "header") %>%
+  flextable::align_text_col(align = "center") %>%
+  flextable::set_caption(caption = "SA statistics (Moran's I)")) %>%
+  print()
+
+rm(g, order,
+   moran.stat.Z, moran.stat.MC, tb, 
+   neighbours_knn_N_control)
+```
+
+**Local Moran**
+
+```{r NCmoran-local}
+## For the selected gene
+SA_genes <- "ENSG00000197971"
+### Prepare the data ----
+gCounts <- N_control[,SA_genes]
+### Calculate Moran's I ----
+names(gCounts) <- N_control$Barcode
+moran.multi.local <- localmoran(gCounts,
+                                listw = neighbours_N_Control, 
+                                spChk = TRUE)
+
+rm(gCounts)
+```
+
+```{r NC_locM, echo=FALSE, warning=FALSE, message=FALSE, fig.width=11, fig.height=11}
+moran.local.map <- moran.multi.local %>% 
+  as.data.frame() %>% 
+  rownames_to_column(var = "Barcode") %>% 
+  dplyr::rename("p.value" = `Pr(z != E(Ii))`) %>% 
+  left_join(polygons[,"Barcode"]) %>% 
+  mutate(signif = as.factor(case_when(p.value < 0.05 ~ "Signif.",
+                                      p.value >= 0.05 ~ "Not Signif.")),
+         b_geom = if_else(signif == "Signif.", 
+                          geom_pol, 
+                          NA))
+
+### Plot: Map Local Moran ----
+ggplot(data = moran.local.map) +
+  geom_sf(aes(geometry = geom_pol, fill = Ii), 
+          colour = "grey30") + 
+  scale_fill_viridis_c(option = "inferno", limits = c(-0.5, 1)) +
+  geom_sf(aes(geometry = b_geom),
+          fill = NA,
+          colour = "#E0E0E0",
+          linewidth = 0.25) +
+  labs(x = "",
+       y = "",
+       fill = "Local Moran\nIi") +
+  my_theme_s
+```
+
+### 4.2 Figure: Modifiable Areal Unit Problem (MAUP)
+
+#### 4.2.1 Prepare for MAUP calculations
+
+Here we prepare the data to calculate MAUP. Note that the below code will produce the selected graphs. If you want to have a look at the exploration before the selection then refer to the *figure_MAUP.R* script inside the *figures/R* folder in the [publication's](https://github.com/ncl-icbam/cell-perspectives-paper) GitHub repo.
+
+**NOTE 1:** here we selected to work with Seurat-Normalised counts.\
+**NOTE 2:** we filtered out genes that were expressed in less than 1000 spots.
+
+```{r figure_MAUP_data}
+### Get counts to be used ----
+select <- SA_counts_Nor %>% 
+  t() %>%
+  as.data.frame() %>%
+  filter(rowSums(. != 0) > 1000) %>% 
+  rownames(.)
+  
+cor.input <- SA_counts_Nor %>%
+  dplyr::select(all_of(select))
+
+### Set plot output prefix ----
+prfx <- "countNorm"
+
+### Get a set of colours ----
+## Colourblind-friendly colours using cols4all
+## c4a palette: c4a.bu_br_bivs
+cols_grid <- c("#4992C8", "#AECBEA")
+
+## c4a palette: misc.okabe
+cols_lay <- c("#E69F00", "#56B4E9", "#009E73",
+              "#F0E442", "#0072B2", "#D55E00", 
+              "#CC79A7")
+
+```
+
+#### 4.2.2 Calculate correlations
+
+To showcase the change in the correlation statistic as aggregation changes we selected genes that had a low positive Spearman R initially which flipped to a negative Spearman R at the "layer" level of aggregation. This was selected in accordance with a reviewer comment which argued that a flip from a positive to a negative trend makes the MAUP effect illustrated better. More specifically the selection pool consisted of genes that fulfilled all 3 of the below filters:
+
+|   Aggregation level   |  Filter   |
+|:---------------------:|:---------:|
+|    No aggregation     |  R \> 0   |
+| Grid-like aggregation | R \> 0.1  |
+|   Biological layers   | R \< -0.7 |
+
+A genes pair was selected in random to produce the visualisation:
+
+|     gene_X      |     gene_Y      |  R   |
+|:---------------:|:---------------:|:----:|
+| ENSG00000110484 | ENSG00000111341 | 0.18 |
+
+```{r correlations}
+## Spearman correlations between all genes
+cor.multi <- cor(cor.input, cor.input, method = "spearman")
+diag(cor.multi) <- 0 #set diagonal to zero
+
+gene_x <- "ENSG00000110484"
+gene_y <- "ENSG00000111341"
+
+```
+
+```{r cor_plot, echo=FALSE, fig.width=6, fig.height=4}
+sp <- ggscatter(cor.input, 
+                x = gene_x, 
+                y = gene_y, 
+                add = "reg.line", conf.int = TRUE, 
+                xlab = "", 
+                ylab = "", 
+                ggtheme = my_theme)
+
+(sp + stat_cor(method = "spearman",
+                 cor.coef.name = "R",
+                 p.accuracy = 0.001, 
+                 r.accuracy = 0.01,
+                 label.x.npc = "middle",
+                 label.y.npc = "top")) %>% 
+    print()
+```
+
+#### 4.2.3 Create zonation maps
+
+We showcase the MAUP in two different zone types.\
+1. A grid.\
+2. The tissue regions.
+
+For the grid we need a 361-groups grid. This is so that we reduce the number of observations by one order of magnitude from the 3610 individual spots we have initially in the data set. To find how many breaks we should have on each side of the tissue we calculate: *sqrt(361) = 19* so we need roughly 19 groups on the X and 19 on the Y axis. The X has a length of 115 and the Y of 76. Therefore, 115/19 = 6.05 (so we need to break every 6 spots) and 76/19 = 4 (so we need to break every 4 spots).
+
+**NOTE:** because the tissue is not a perfect square the groups are eventually going to be less than 361.
+
+```{r zone_maps_data, message=FALSE}
+### Prepare the data ----
+## Get the range of the locations
+rangeX <- range(meta_D[meta_D[, "Section"] == 1, "Spot_X"])
+rangeY <- range(meta_D[meta_D[, "Section"] == 1, "Spot_Y"])
+
+## Store the information in columns denoting groups.
+
+dt_MAUP <- polygons %>% 
+  left_join(meta_D[,c("Barcode", "Spot_X", "Spot_Y")], by = "Barcode") %>%
+  mutate(group_X = as.numeric(cut(.data[["Spot_X"]], 
+                                  breaks = seq(rangeX[1], rangeX[2], by = 6), 
+                                  include.lowest = TRUE)),
+         group_Y = as.numeric(cut(.data[["Spot_Y"]], 
+                                  breaks = seq(rangeY[1], rangeY[2], by = 4), 
+                                  include.lowest = TRUE)),
+         group_361 = factor(paste(group_X, group_Y, sep = "_")))
+
+## The grid-like grouping will have a two-colour scheme
+cols <- rep(cols_grid, 181)
+
+colours <- expand.grid(group_X = seq(1:19),
+                       group_Y = seq(1:19)) %>%
+  mutate(group_361 = factor(paste(group_X, group_Y, sep = "_"))) %>%
+  mutate(cols = cols[1:nrow(.)]) %>%
+  dplyr::select(cols, group_361)
+
+dt_MAUP <- dt_MAUP %>%
+  left_join(colours)
+```
+
+```{r zone_maps_plot, echo=FALSE, fig.width=11, fig.height=11}
+### Plot: Map grid zones ----
+  ggplot(data = dt_MAUP) +
+    geom_sf(aes(geometry = geom_pol, fill = cols), 
+            colour = "black") + 
+    scale_fill_manual(values = cols) +
+    labs(x = "",
+         y = "") + 
+    my_theme_s + 
+    theme(legend.position = "none")
+
+## Some housekeeping
+  rm(cols, rangeX, rangeY, colours)
+```
+
+#### 4.2.4 Calculate correlations for zones
+
+As a summary statistic we selected the mean expression because the mean is not affected by the size of each area. On the other hand, the sum is affected by how big is the area (If a gene is almost uniformly expressed throughout, then: number of spots in area goes UP --\> gene expression goes UP --\> correlation goes UP).
+
+```{r cor_zones_data, message=FALSE, warning=FALSE}
+### Prepare the data ----
+## Add zones to the correlation input df
+cor.input <- cor.input %>%
+  rownames_to_column(var = "Barcode") %>%
+  left_join(dt_MAUP[,c("Barcode", "group_361", "layer")]) %>%
+  st_drop_geometry() %>% 
+  dplyr::select(matches("[^geom_pol]")) %>%
+  column_to_rownames(var = "Barcode") 
+
+## Generate the grouped correlation inputs
+groups <- c("group_361", "layer")
+
+for (g in groups) {
+  cIn <- cor.input %>%                                     # get the correlation input
+    dplyr::select(matches(paste0("ENSG|", g))) %>%         # select one group type
+    group_by_at(vars(g)) %>%                               # group by group type and gene
+    summarise(across(matches("ENSG"), tibble::lst(mean)))  # summarise per group per column
+  
+  out <- cIn %>%
+    dplyr::select(ends_with("_mean")) %>% 
+    ungroup() %>%
+    select_all(~gsub("_mean", "", .))
+  
+  assign(paste0("cor.input_", g, "_mean"), out)
+  
+  rm(g, cIn, out)
+}
+```
+
+```{r cor_zones_plot, echo=FALSE, fig.width=6, fig.height=4}
+### Calculate correlations ----
+pattern <- grep("_mean", names(.GlobalEnv), value = TRUE)
+
+for (p in pattern) {
+  message("Working on: ", p)
+  input <- get(p)
+  name <- gsub(".*group_|_mean|.*input_", "", p)
+  
+  cor.multi.grouped <- cor(input, input, method = "spearman")
+  diag(cor.multi.grouped) <- 0 #set diagonal to zero
+  
+  assign(x = paste0("cor.multi_", name), value = cor.multi.grouped)
+  
+  rm(p, input, name, cor.multi.grouped)
+}
+
+### Plot correlations ----
+for (p in pattern) {
+  message("Working on: ", p)
+  input <- get(p)
+  
+  sName <- gsub("cor.input_", "", p)
+  
+  sp <- ggscatter(input, 
+                    x = gene_x, 
+                    y = gene_y, 
+                    add = "reg.line", conf.int = TRUE,
+                    size = 3,
+                    xlab = "", 
+                    ylab = "", 
+                    ggtheme = my_theme)
+  
+  (sp + stat_cor(method = "spearman",
+                 cor.coef.name = "R",
+                 p.accuracy = 0.001, 
+                 r.accuracy = 0.01,
+                 label.x.npc = "middle",
+                 label.y.npc = "top")) %>% 
+    print()
+  
+  rm(p, input, sName, sp)
+}
+
+rm(groups)
+```
+
+#### 4.2.5 Empty tissue map.
+
+This map will be used for the correlations.
+
+```{r empty_map, echo=FALSE, warning=FALSE, error=FALSE, fig.height = 11, fig.width = 11}
+ggplot(data = dt_MAUP) +
+  geom_sf(aes(geometry = geom_pol), 
+          colour = "black") + 
+  scale_fill_manual(values = "grey36") +
+  labs(x = "",
+       y = "") + 
+  my_theme_s + 
+  theme(legend.position = "none")
+
+
+## Some housekeeping 
+rm(cols_grid, cols_lay, groups, pattern, sampleInts)
+```
+
+### 4.3 Figure: Spatial Heterogeneity (SH)
+
+#### 4.3.1 Prepare for SH calculations
+
+Here we prepare the data to calculate SH Note that the below code will produce the selected graphs. If you want to have a look at the exploration before the selection then refer to the *figure_SH.R* script inside the *figures/R* folder in the [publication's](https://github.com/ncl-icbam/cell-perspectives-paper) GitHub repo.
+
+**NOTE 1:** The list of 2000 genes from Seurat comes after variance stabilising and selecting the most variable genes. We want to narrow this further down and get a pool of genes that are variable and expressed in more than 1000 locations on the tissue.
+
+**NOTE 2:** After filtering the pool of genes was reduced to 435 genes.
+
+```{r gwr_prep}
+### Get Seurat-normalised data ----
+data <- SA_counts_Nor
+
+### Select a set of genes to test ----
+## The list of 2000 genes from Seurat comes after variance stabilising and 
+## selecting the most variable genes. We want to narrow this further down and 
+## get a pool of genes that are variable and expressed in more than 2/3 of the 
+## tissue area.
+#### Filter for number of locations expressed ----
+SH_genes <-  data %>%
+  t() %>%
+  as.data.frame() %>%
+  filter(rowSums(. != 0) > 1000) %>% 
+  rownames(.)
+
+### Add geometries and convert to sp format ----
+dt_SH <- data %>%
+  dplyr::select(all_of(SH_genes)) %>%
+  rownames_to_column(var = "Barcode") %>%            # barcodes from row names to column
+  left_join(polygons[,c("geom_pol", "Barcode")]) %>% # merge with geometries
+  column_to_rownames(var = "Barcode") %>%            # barcodes back to row names
+  st_as_sf(., sf_column_name = "geom_pol") %>%       # data frame to sf
+  as(., "Spatial")                                   # sf to sp - GWmodel still works with sp objects
+
+### Set plot output prefix ----
+prfx <- "countNorm"
+
+## Housekeeping
+rm(data)
+```
+
+#### 4.3.2 Run multiple linear/ global regressions
+
+Here we run a linear regression model for all possible combinations for the 435 selected genes, excluding self-pairs.
+
+After running the regressions, we sorted the pairs based on their R^2^ and selected 26 pairs with R^2^ \> 0.4.
+
+These 26 pairs were fed to the GWR model.
+
+#### 4.3.3 Run GWR
+
+From the initial 26 pairs, the one below was selected to showcase SH.
+
+<ul>
+
+<li>ENSG00000091513\~ENSG00000197971</li>
+
+</ul>
+
+```{r gwr}
+### Determine the kernel bandwidth ----
+bw <- bw.gwr("ENSG00000091513~ENSG00000197971",
+             approach = "AIC",
+             adaptive = T,
+             data = dt_SH)
+
+## The bandwidth is an adaptive bandwidth (kernel size) indicating that its size 
+## varies but the nearest 183 observations will be used to compute each local 
+## weighted regression. 
+## Here it, has a value of 183 indicating that 5% of the tissue data will be 
+## used in each local calculation (there are 3610 records in the data):
+message("Bandwidth (bw): ", bw)
+
+gwr <- gwr.basic("ENSG00000091513~ENSG00000197971", 
+                 adaptive = T,
+                 data = dt_SH,
+                 bw = bw)
+
+gwr
+
+gwr.tab <- apply(gwr$SDF@data[, 1:7], 2, summary)
+gwr.tab <- round(gwr.tab, 1)
+t(gwr.tab[,1:2])
+
+## Housekeeping
+rm(gwr.tab)
+```
+
+```{r gwr_map, echo=FALSE, warning=FALSE, message=FALSE, fig.width=11, fig.height=11}
+predictorVar <- gsub(".+?~", "", "ENSG00000091513~ENSG00000197971")
+
+gwr_sf <- st_as_sf(gwr$SDF) %>% 
+  mutate(signif0 = factor(if_else(abs(.data[["Intercept_TV"]]) > 1.96, 
+                                    "Signif.", 
+                                    "Not-signif.")),
+           signif1 = factor(if_else(abs(.data[[paste0(predictorVar, "_TV")]]) > 1.96, 
+                                   "Signif.", 
+                                   "Not-signif.")),
+           b0_geom = if_else(signif0 == "Signif.", 
+                             geometry, 
+                             NA),
+           b1_geom = if_else(signif1 == "Signif.", 
+                            geometry, 
+                            NA))
+
+### Plot: Map Coefficients ----
+for (i in c(0,1)) {
+  tab = round(summary(gwr$lm)$coefficients, 3)
+  colnames(tab)[3:4] = c("t-value", "p-value")
+  rownames(tab) = c("Intercept", "Covariate")
+  
+  tab = data.frame(tab)
+  tab1 = tab[1,]
+  tab2 = tab[2,]
+  
+  if (i == 0) {
+    fill <-  "Intercept"
+    b_geom <- "b0_geom"
+    tit = expression(""*beta[0]*"")
+    table = tab1
+  } else {
+    fill  <- predictorVar
+    b_geom <- "b1_geom"
+    tit = expression(""*beta[1]*"")
+    table = tab2
+  }
+  
+  ### Plot: Map Coefficients that flip ----
+  (ggplot(gwr_sf) + 
+    geom_sf(aes(geometry = geometry, 
+                fill = get(fill)),
+            colour = NA) +
+    geom_sf(aes(geometry = get(b_geom)),
+            fill = alpha("white", 0),
+            colour = "black",
+            linewidth = 0.5) +
+    scale_fill_gradient2(high = "#B2182B",
+                         mid = "#F7F7F7",
+                         low = "#2166AC",
+                         midpoint = 0,
+                         n.breaks = 7) +
+    # scale_fill_binned_c4a_div(palette = "brewer.rd_bu", 
+    #                           mid = 0, 
+    #                           show.limits = TRUE, 
+    #                           n.breaks = 11) +
+    labs(x = "",
+         y = "",
+         fill = tit) +
+    annotation_custom(tableGrob(table), 
+                      xmin = 150, xmax = 450, 
+                      ymin = -570, ymax = -500) +
+    my_theme_s) %>%
+    print()
+}
+
+rm(predictorVar, gwr, gwr_sf, bw)
+```
